@@ -8,6 +8,12 @@ against the sparse OCC-grounded transition matrix defined in
 external database is involved: validity is computed by direct lookup against the
 constraint graph.
 
+The validator operates exclusively over ``EMOTION_SET`` as defined in
+``akg/emotion_schema.py``.  Any token not present in ``EMOTION_SET`` is
+treated as a hard constraint violation.  There is no fallback, no fuzzy
+matching, and no silent remapping: unknown emotions are flagged explicitly in
+the return value and counted as invalid transitions.
+
 Theoretical basis
 -----------------
 The validator operationalises the closed-world assumption over the AKG
@@ -30,13 +36,14 @@ violated.  A sequence of length 0 is rejected as malformed before scoring.
 
 Validation pipeline
 -------------------
-1. **Structural check** — reject empty sequences immediately.
-2. **Membership check** — flag any token not in ``EMOTION_LIST`` as an unknown
+1. **Type check** — reject non-list inputs and non-string elements immediately.
+2. **Structural check** — reject empty sequences.
+3. **Membership check** — flag any token not in ``EMOTION_SET`` as an unknown
    emotion; unknown emotions generate invalid transition records for every pair
-   they participate in.
-3. **Transition check** — for each consecutive pair ``(e_i, e_{i+1})`` where
+   they participate in.  No fallback or remapping is applied.
+4. **Transition check** — for each consecutive pair ``(e_i, e_{i+1})`` where
    both tokens are known, perform direct lookup in ``TRANSITIONS``.
-4. **Scoring** — compute ETVS from aggregated counts.
+5. **Scoring** — compute ETVS from aggregated counts.
 
 Usage example
 -------------
@@ -56,15 +63,34 @@ Usage example
 
     print(get_allowed_next("shame"))
     # ["anger", "distress", "pride"]
+
+    # "surprise" is no longer a valid emotion in EMOTION_SET:
+    result = validate_sequence(["fear", "surprise"])
+    # {
+    #     "valid_transitions": 0,
+    #     "invalid_transitions": 1,
+    #     "invalid_pairs": [("fear", "surprise")],
+    #     "unknown_emotions": ["surprise"],
+    #     "etvs": 0.0
+    # }
 """
 
 from __future__ import annotations
 
-from akg.emotion_schema import EMOTION_LIST
+from akg.emotion_schema import EMOTION_SET
 from akg.transition_matrix import TRANSITIONS
 
 # Frozen set for O(1) membership tests throughout this module.
-_KNOWN_EMOTIONS: frozenset[str] = frozenset(EMOTION_LIST)
+# Built from EMOTION_SET — the single source of truth for the valid
+# emotion space.  "surprise" is not a member of EMOTION_SET and will
+# therefore be flagged as unknown by all validation calls.
+_KNOWN_EMOTIONS: frozenset[str] = frozenset(EMOTION_SET)
+
+# Compile-time guard: assert schema and matrix are consistent.
+assert "surprise" not in _KNOWN_EMOTIONS, (
+    "'surprise' must not be a member of the validated emotion set. "
+    "Check akg/emotion_schema.py."
+)
 
 
 # ---------------------------------------------------------------------------
@@ -82,15 +108,16 @@ def get_allowed_next(emotion: str) -> list[str]:
     ----------
     emotion:
         A string token representing an OCC emotion.  Must be a member of
-        ``EMOTION_LIST``; unknown tokens return an empty list rather than
-        raising, to support graceful degradation in pipeline contexts.
+        ``EMOTION_SET``; unknown tokens — including ``"surprise"`` — return an
+        empty list rather than raising, to support graceful degradation in
+        pipeline contexts.
 
     Returns
     -------
     list[str]
         Sorted list of emotion strings reachable from *emotion* in one step.
-        Empty if *emotion* is unknown or has no outgoing transitions (a sink
-        node in the graph, though none exist in the current schema).
+        Empty if *emotion* is not a member of ``EMOTION_SET`` or has no
+        outgoing transitions.
 
     Examples
     --------
@@ -100,6 +127,9 @@ def get_allowed_next(emotion: str) -> list[str]:
         ['anger', 'distress', 'hope']
 
         >>> get_allowed_next("nonexistent")
+        []
+
+        >>> get_allowed_next("surprise")   # not in EMOTION_SET
         []
     """
     if emotion not in _KNOWN_EMOTIONS:
@@ -120,10 +150,11 @@ def validate_sequence(sequence: list[str]) -> dict:
       least one emotion token to be semantically interpretable.
     * A **single-token sequence** is valid by definition (ETVS = 1.0; zero
       transitions means zero violations).
-    * A token absent from ``EMOTION_LIST`` is an **unknown emotion**.  Every
-      transition pair involving an unknown token is recorded as invalid and
-      included in ``invalid_pairs``, but processing continues for the remainder
-      of the sequence.
+    * A token absent from ``EMOTION_SET`` — including ``"surprise"`` — is an
+      **unknown emotion**.  Every transition pair involving an unknown token is
+      recorded as invalid and included in ``invalid_pairs``.  No fallback or
+      remapping is applied.  Processing continues for the remainder of the
+      sequence so the full violation set is captured in a single pass.
     * A transition ``(e_i, e_{i+1})`` where both tokens are known but the pair
       is absent from ``TRANSITIONS[e_i]`` is an **invalid transition**.
 
@@ -151,7 +182,7 @@ def validate_sequence(sequence: list[str]) -> dict:
 
     ``unknown_emotions`` : list[str]
         Deduplicated, sorted list of tokens in *sequence* that are not members
-        of ``EMOTION_LIST``.
+        of ``EMOTION_SET``.
 
     ``etvs`` : float
         Emotional Transition Validity Score in ``[0.0, 1.0]``.
@@ -187,12 +218,12 @@ def validate_sequence(sequence: list[str]) -> dict:
             'etvs': 0.0
         }
 
-        >>> validate_sequence(["euphoria", "joy"])
+        >>> validate_sequence(["fear", "surprise"])
         {
             'valid_transitions': 0,
             'invalid_transitions': 1,
-            'invalid_pairs': [('euphoria', 'joy')],
-            'unknown_emotions': ['euphoria'],
+            'invalid_pairs': [('fear', 'surprise')],
+            'unknown_emotions': ['surprise'],
             'etvs': 0.0
         }
     """
@@ -220,7 +251,8 @@ def validate_sequence(sequence: list[str]) -> dict:
         )
 
     # ------------------------------------------------------------------
-    # Identify unknown tokens (deduplicated, order-preserving insertion)
+    # Identify unknown tokens
+    # Tokens not in EMOTION_SET are strict violations — no fallback applied.
     # ------------------------------------------------------------------
     unknown_emotions: list[str] = sorted(
         {token for token in sequence if token not in _KNOWN_EMOTIONS}
@@ -246,7 +278,7 @@ def validate_sequence(sequence: list[str]) -> dict:
     invalid_pairs: list[tuple[str, str]] = []
 
     for src, tgt in zip(sequence, sequence[1:]):
-        # Any unknown token in the pair makes the transition invalid.
+        # Any unknown token in the pair makes the transition strictly invalid.
         if src not in _KNOWN_EMOTIONS or tgt not in _KNOWN_EMOTIONS:
             invalid_count += 1
             invalid_pairs.append((src, tgt))
@@ -263,7 +295,6 @@ def validate_sequence(sequence: list[str]) -> dict:
     # Compute ETVS
     # ------------------------------------------------------------------
     total_transitions: int = valid_count + invalid_count
-    # Guard is technically redundant for len >= 2, but kept for explicitness.
     etvs: float = (
         valid_count / total_transitions if total_transitions > 0 else 1.0
     )

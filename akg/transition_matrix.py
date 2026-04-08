@@ -3,15 +3,21 @@ Affective Knowledge Graph (AKG) — Transition Matrix
 =====================================================
 
 This module defines a sparse, psychologically defensible set of short-term
-emotional transitions between the nine OCC emotions defined in
+emotional transitions between the eight OCC emotions defined in
 ``akg/emotion_schema.py``.
+
+All nodes and edges in this matrix are members of ``EMOTION_SET``.  The
+``"surprise"`` node has been permanently removed from both the source and
+target sets.  Any transition previously routed through ``"surprise"`` is
+absent from this matrix; the planner and detector operate solely on the
+eight-emotion closed world.
 
 Design principles
 -----------------
 **Psychological immediacy constraint**
-    Only transitions that can plausibly occur within a 2–3 sentence narrative
-    window are included. Slow-burn or dispositional shifts (e.g., joy → love,
-    distress → depression) are excluded.
+    Only transitions that can plausibly occur within a 2-3 sentence narrative
+    window are included. Slow-burn or dispositional shifts (e.g., joy -> love,
+    distress -> depression) are excluded.
 
 **Appraisal re-evaluation as transition mechanism**
     Each edge represents a discrete re-appraisal event: new information, an
@@ -22,8 +28,8 @@ Design principles
 **Sparsity rationale**
     The maximum out-degree of 3 per node enforces that the graph models
     *typical* narrative trajectories rather than exhaustive logical possibility.
-    Edges absent from this matrix should be treated as constrained-out in
-    downstream validation, not merely as unmodelled.
+    Edges absent from this matrix are treated as constrained-out in downstream
+    validation, not merely as unmodelled.
 
 **Asymmetry policy**
     Bidirectional edges are included only when re-appraisal in both directions
@@ -40,7 +46,7 @@ Design principles
       associated with the *arriving* emotion in this specific transition
       context, following Frijda (1986) action-tendency theory.
 
-Total edges: 24
+Total edges: 21
 
 References
 ----------
@@ -50,6 +56,8 @@ Frijda, N. H. (1986). *The Emotions*. Cambridge University Press.
 """
 
 from __future__ import annotations
+
+from akg.emotion_schema import EMOTION_SET
 
 # ---------------------------------------------------------------------------
 # Type aliases for readability
@@ -348,64 +356,30 @@ TRANSITIONS: TransitionMatrix = {
             ),
         },
     },
-
-    # ------------------------------------------------------------------
-    # SURPRISE  (out-degree: 3)
-    # A valence-neutral event-based state triggered by violated
-    # expectation; functions as a transitional node that routes
-    # subsequent appraisal along positive or negative branches.
-    # ------------------------------------------------------------------
-    "surprise": {
-        "joy": {
-            "appraisal_condition": (
-                "Unexpected event is rapidly appraised as desirable and "
-                "goal-congruent upon secondary evaluation"
-            ),
-            "behavioral_tendency": (
-                "Orienting response followed by approach; spontaneous "
-                "expressive vocalisation and increased engagement"
-            ),
-        },
-        "fear": {
-            "appraisal_condition": (
-                "Unexpected event is rapidly appraised as potentially threatening "
-                "or goal-incongruent upon secondary evaluation"
-            ),
-            "behavioral_tendency": (
-                "Startle-to-freeze transition; heightened environmental scanning "
-                "and defensive postural adjustment"
-            ),
-        },
-        "distress": {
-            "appraisal_condition": (
-                "Unexpected event is appraised as an undesirable outcome that "
-                "has already negatively affected a valued goal"
-            ),
-            "behavioral_tendency": (
-                "Abrupt cessation of current goal-pursuit; "
-                "cognitive reorientation toward loss appraisal"
-            ),
-        },
-    },
 }
 
 # ---------------------------------------------------------------------------
 # Module-level integrity checks
 # ---------------------------------------------------------------------------
 
-_VALID_EMOTIONS: frozenset[str] = frozenset([
-    "joy", "distress", "hope", "fear",
-    "pride", "shame", "anger", "gratitude", "surprise",
-])
+_VALID_EMOTIONS: frozenset[str] = frozenset(EMOTION_SET)
+
+assert "surprise" not in _VALID_EMOTIONS, (
+    "'surprise' must not appear in EMOTION_SET used by the transition matrix."
+)
 
 for _src, _targets in TRANSITIONS.items():
-    assert _src in _VALID_EMOTIONS, f"Unknown source emotion: {_src!r}"
+    assert _src in _VALID_EMOTIONS, (
+        f"Unknown source emotion: {_src!r}. "
+        f"All nodes must be members of EMOTION_SET."
+    )
     assert len(_targets) <= 3, (
         f"Out-degree constraint violated for {_src!r}: {len(_targets)} > 3"
     )
     for _tgt, _meta in _targets.items():
         assert _tgt in _VALID_EMOTIONS, (
-            f"Unknown target emotion {_tgt!r} in transitions for {_src!r}"
+            f"Unknown target emotion {_tgt!r} in transitions for {_src!r}. "
+            f"All nodes must be members of EMOTION_SET."
         )
         assert _src != _tgt, f"Self-loop detected at {_src!r}"
         assert "appraisal_condition" in _meta and "behavioral_tendency" in _meta, (
@@ -413,6 +387,13 @@ for _src, _targets in TRANSITIONS.items():
         )
 
 _TOTAL_EDGES: int = sum(len(v) for v in TRANSITIONS.values())
-assert 20 <= _TOTAL_EDGES <= 25, (
-    f"Edge count {_TOTAL_EDGES} outside target range [20, 25]"
+assert 18 <= _TOTAL_EDGES <= 25, (
+    f"Edge count {_TOTAL_EDGES} outside target range [18, 25]"
 )
+
+# Assert every EMOTION_SET member has at least one outgoing transition.
+for _emotion in EMOTION_SET:
+    assert _emotion in TRANSITIONS and len(TRANSITIONS[_emotion]) > 0, (
+        f"Emotion {_emotion!r} has no outgoing transitions. "
+        f"Every node must be reachable in the planner walk."
+    )

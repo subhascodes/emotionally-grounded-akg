@@ -2,47 +2,41 @@
 akg/emotion_mapping.py
 =======================
 
-Deterministic utility layer for mapping arbitrary emotion labels onto the
+Deterministic utility layer for mapping classifier output labels onto the
 canonical OCC emotion set defined in ``akg/emotion_schema.py``.
 
-This module serves as the single point of truth for any component in the
-neuro-symbolic storytelling pipeline that must normalise an externally
-produced emotion string (e.g., from a third-party classifier, a dataset
-annotation, or a free-text label) into one of the nine AKG-valid emotions.
+This module is the single point of truth for label normalisation across the
+neuro-symbolic storytelling pipeline.  It is designed for use with the
+``j-hartmann/emotion-english-distilroberta-base`` classifier, whose output
+labels are mapped directly and exhaustively to the eight-emotion
+``EMOTION_SET``.
 
 Design principles
 -----------------
+**Direct label mapping over substring matching**
+    The primary mapping table (``_LABEL_MAP``) covers every label produced by
+    the target classifier as an exact-match lookup.  This is faster, more
+    predictable, and easier to audit than substring search.  Substring
+    matching is retained only as a final-resort fallback for unanticipated
+    labels.
+
 **Strict schema alignment**
-    The only valid output values are members of ``EMOTION_LIST`` as imported
-    from ``akg/emotion_schema.py``.  No additional emotions are introduced or
-    permitted.
+    The only valid output values are the eight members of ``EMOTION_SET`` as
+    imported from ``akg/emotion_schema.py``.  No label outside this set can
+    appear in any output of this module.
 
 **Determinism**
     ``map_to_occ`` is a pure function with no randomness, no external I/O,
     and no mutable state.  Given the same input string it always returns the
     same output string.
 
-**Priority-ordered keyword matching**
-    Each input label is lower-cased and checked against an ordered list of
-    ``(keyword, occ_emotion)`` pairs.  The first keyword found as a
-    case-insensitive substring of the input wins.  Priority order is
-    documented in ``_KEYWORD_PRIORITY`` and follows the rule specific → general
-    to prevent dominant emotional states from being overridden by weaker or
-    more transient appraisals.
-
-**Safe fallback**
-    If no keyword matches, ``map_to_occ`` returns ``"distress"`` — the most
-    semantically neutral negative-valence OCC emotion — rather than raising.
-    This prevents downstream graph traversal from failing on unrecognised
-    labels while flagging the ambiguity to callers via the predictable return
-    value.
-
-**Validation utility**
-    ``is_valid_emotion`` provides an O(1) membership test against the frozen
-    schema set, suitable for use as an assertion guard or pipeline filter.
+**No-None guarantee**
+    ``map_to_occ`` never returns ``None``.  If no mapping matches, the hard
+    fallback ``"distress"`` is returned.
 
 References
 ----------
+Hartmann, J. (2022). Emotion English DistilRoBERTa-base.
 Ortony, A., Clore, G. L., & Collins, A. (1988). *The Cognitive Structure of
 Emotions*. Cambridge University Press.
 """
@@ -52,230 +46,246 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-# Ensure project root is on sys.path when this module is used directly.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from akg.emotion_schema import EMOTION_LIST
+from akg.emotion_schema import EMOTION_SET
 
 # ---------------------------------------------------------------------------
 # Schema anchor
 # ---------------------------------------------------------------------------
 
-# Frozen set for O(1) membership tests in is_valid_emotion().
-# Derived exclusively from the imported EMOTION_LIST; never extended here.
-_VALID_EMOTIONS: frozenset[str] = frozenset(EMOTION_LIST)
+_VALID_EMOTIONS: frozenset[str] = frozenset(EMOTION_SET)
+
+assert "surprise" not in _VALID_EMOTIONS, (
+    "'surprise' must not be a member of EMOTION_SET used for mapping output."
+)
 
 # ---------------------------------------------------------------------------
-# Keyword priority table
+# Direct label mapping
 # ---------------------------------------------------------------------------
 
-# Each entry is a (keyword, occ_emotion) pair.  The list is evaluated in
-# order; the FIRST matching keyword wins.  Keywords are matched as
-# case-insensitive substrings of the lowercased input label.
-#
-# Priority rationale (specific → general):
-#   - Shame and anger are placed first because their keywords are highly
-#     specific and rarely ambiguous; allowing distress or fear to match
-#     before them would produce incorrect OCC appraisal-branch assignments.
-#   - Fear follows shame and anger; its keywords (scared, anxious, nervous,
-#     worried, panic) are specific enough not to bleed into other categories.
-#   - Distress is placed after the above agent-directed and threat-based
-#     emotions to act as the general negative-valence bucket.
-#   - Positive-valence emotions (joy, hope, gratitude, pride) follow.
-#   - "surprise" is placed last because in OCC theory it is a transient
-#     modifier emotion triggered by expectation violation, not a dominant
-#     sustained emotional state.  Placing it last prevents transient surprise
-#     cues from overriding substantive appraisals (e.g., "astonished at the
-#     betrayal" should map to a valenced emotion, not surprise).
+# Exhaustive mapping from known classifier labels to EMOTION_SET members.
+# Covers all output labels of j-hartmann/emotion-english-distilroberta-base
+# plus common synonyms and OCC-adjacent terms likely to appear in pipeline
+# outputs.  Each value must be a member of EMOTION_SET.
 
-_KEYWORD_PRIORITY: list[tuple[str, str]] = [
-    # ------------------------------------------------------------------
-    # shame  — agent-based, self-directed, negative; highly specific keywords
-    # ------------------------------------------------------------------
+_LABEL_MAP: dict[str, str] = {
+    # --- joy ---
+    "joy":          "joy",
+    "happiness":    "joy",
+    "happy":        "joy",
+    "pleased":      "joy",
+    "delighted":    "joy",
+    "excited":      "joy",
+    "elation":      "joy",
+
+    # --- distress ---
+    "sadness":      "distress",
+    "distress":     "distress",
+    "sad":          "distress",
+    "grief":        "distress",
+    "sorrow":       "distress",
+    "depressed":    "distress",
+    "disappointed": "distress",
+    "upset":        "distress",
+    "hurt":         "distress",
+
+    # --- fear ---
+    "fear":         "fear",
+    "anxiety":      "fear",
+    "anxious":      "fear",
+    "nervous":      "fear",
+    "worried":      "fear",
+    "scared":       "fear",
+    "panic":        "fear",
+    "terror":       "fear",
+
+    # --- anger ---
+    "anger":        "anger",
+    "disgust":      "anger",
+    "frustration":  "anger",
+    "frustrated":   "anger",
+    "annoyed":      "anger",
+    "furious":      "anger",
+    "rage":         "anger",
+
+    # --- shame ---
+    "shame":        "shame",
+    "guilt":        "shame",
+    "guilty":       "shame",
+    "embarrassed":  "shame",
+    "ashamed":      "shame",
+    "remorse":      "shame",
+
+    # --- gratitude ---
+    "gratitude":    "gratitude",
+    "love":         "gratitude",
+    "thankful":     "gratitude",
+    "grateful":     "gratitude",
+    "appreciative": "gratitude",
+    "admiration":   "gratitude",
+
+    # --- pride ---
+    "pride":        "pride",
+    "proud":        "pride",
+    "confident":    "pride",
+    "accomplished": "pride",
+    "approval":     "pride",
+
+    # --- hope ---
+    "hope":         "hope",
+    "hopeful":      "hope",
+    "optimistic":   "hope",
+    "optimism":     "hope",
+
+    # --- formerly surprise-adjacent labels: remapped to valenced emotions ---
+    # These labels describe reactions that resolve to identifiable valenced
+    # appraisal states.  Each is mapped to the nearest EMOTION_SET member.
+    "amazed":       "joy",       # positive valenced wonder → joy
+    "shocked":      "distress",  # negative unexpected event → distress
+    "astonished":   "distress",  # negative unexpected event → distress
+}
+
+# Compile-time assertion: every value in the map must be in EMOTION_SET.
+for _raw, _mapped in _LABEL_MAP.items():
+    assert _mapped in _VALID_EMOTIONS, (
+        f"_LABEL_MAP entry {_raw!r} -> {_mapped!r} is not in EMOTION_SET. "
+        f"Valid: {sorted(_VALID_EMOTIONS)}"
+    )
+
+# ---------------------------------------------------------------------------
+# Fallback keyword table (last resort for unmapped labels)
+# ---------------------------------------------------------------------------
+
+# Applied only when _LABEL_MAP produces no exact match.
+# Ordered specific -> general to prevent weaker appraisals overriding
+# dominant ones.  Entries are checked as case-insensitive substrings.
+
+_KEYWORD_FALLBACK: list[tuple[str, str]] = [
     ("ashamed",      "shame"),
     ("guilty",       "shame"),
     ("embarrassed",  "shame"),
-
-    # ------------------------------------------------------------------
-    # anger  — agent-based, other-directed, negative; specific action cues
-    # ------------------------------------------------------------------
     ("furious",      "anger"),
     ("annoyed",      "anger"),
     ("angry",        "anger"),
     ("frustrated",   "anger"),
-
-    # ------------------------------------------------------------------
-    # fear  — event-based, prospective, negative; threat-detection cues
-    # ------------------------------------------------------------------
     ("panic",        "fear"),
     ("scared",       "fear"),
     ("anxious",      "fear"),
     ("nervous",      "fear"),
     ("worried",      "fear"),
-
-    # ------------------------------------------------------------------
-    # distress  — event-based, realised, negative; general loss/sadness cues
-    # ------------------------------------------------------------------
     ("depressed",    "distress"),
     ("disappointed", "distress"),
     ("grief",        "distress"),
     ("hurt",         "distress"),
     ("sad",          "distress"),
     ("upset",        "distress"),
-
-    # ------------------------------------------------------------------
-    # joy  — event-based, realised, positive
-    # ------------------------------------------------------------------
     ("delighted",    "joy"),
-    ("excited",      "joy"),   # excited maps to joy, not surprise
+    ("excited",      "joy"),
     ("happy",        "joy"),
     ("pleased",      "joy"),
-
-    # ------------------------------------------------------------------
-    # hope  — event-based, prospective, positive
-    # ------------------------------------------------------------------
-    ("looking forward", "hope"),   # multi-word phrase checked first
-    ("hopeful",         "hope"),
-    ("optimistic",      "hope"),
-
-    # ------------------------------------------------------------------
-    # gratitude  — agent-based, other-directed, positive
-    # ------------------------------------------------------------------
+    ("hopeful",      "hope"),
+    ("optimistic",   "hope"),
     ("appreciative", "gratitude"),
     ("grateful",     "gratitude"),
     ("thankful",     "gratitude"),
-
-    # ------------------------------------------------------------------
-    # pride  — agent-based, self-directed, positive
-    # ------------------------------------------------------------------
+    ("love",         "gratitude"),
+    ("admiration",   "gratitude"),
     ("accomplished", "pride"),
     ("confident",    "pride"),
     ("proud",        "pride"),
-
-    # ------------------------------------------------------------------
-    # surprise  — LOWEST PRIORITY: valence-neutral, transient OCC modifier.
-    # In OCC theory, surprise reflects expectation violation rather than a
-    # sustained appraisal state.  It is placed last so that substantive
-    # valenced emotions (e.g., distress, joy) take precedence when their
-    # keywords co-occur with surprise cues in a compound label.
-    # ------------------------------------------------------------------
-    ("astonished",   "surprise"),
-    ("shocked",      "surprise"),
-    ("amazed",       "surprise"),
 ]
 
-# Compile-time assertion: every target in the priority table must be a
-# member of the AKG schema.  This guard fires at import time so a schema
-# change is caught immediately without requiring a test run.
-for _kw, _target in _KEYWORD_PRIORITY:
+for _kw, _target in _KEYWORD_FALLBACK:
     assert _target in _VALID_EMOTIONS, (
-        f"Keyword table references unknown OCC emotion {_target!r}. "
-        f"Valid emotions: {sorted(_VALID_EMOTIONS)}"
+        f"_KEYWORD_FALLBACK entry {_kw!r} -> {_target!r} is not in EMOTION_SET."
     )
 
-# Safe fallback returned when no keyword matches.
 _FALLBACK_EMOTION: str = "distress"
-assert _FALLBACK_EMOTION in _VALID_EMOTIONS, (
-    f"Fallback emotion {_FALLBACK_EMOTION!r} is not in EMOTION_LIST."
-)
+assert _FALLBACK_EMOTION in _VALID_EMOTIONS
+
 
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
-def map_to_occ(label: str) -> str:
-    """Map an arbitrary emotion label onto the nearest AKG OCC emotion.
+def map_to_occ(label: str, previous_emotion: str | None = None) -> str:
+    """Map a classifier output label onto a canonical OCC emotion.
 
-    Performs a deterministic, priority-ordered keyword search over the
-    lowercased input string.  The first keyword found as a substring of the
-    input determines the return value.  If no keyword matches, the safe
-    fallback ``"distress"`` is returned.
+    Uses a three-tier lookup strategy:
+    1. Exact match in ``_LABEL_MAP`` (covers all known classifier labels).
+    2. Substring keyword scan in ``_KEYWORD_FALLBACK`` (handles unseen labels).
+    3. Hard fallback: *previous_emotion* if valid, else ``"distress"``.
 
-    The function never raises on unexpected input: non-string arguments are
-    coerced to strings via ``str()`` before processing.
+    The function never returns ``None`` and never returns a value outside
+    the eight members of ``EMOTION_SET``.
 
     Parameters
     ----------
     label:
-        An arbitrary emotion label string.  May be a single word (e.g.,
-        ``"angry"``), a compound phrase (e.g., ``"very sad and upset"``), or
-        an OCC emotion name already in the schema.  Case-insensitive.
+        A classifier output label or arbitrary emotion string.
+        Case-insensitive; coerced to string if not already.
+    previous_emotion:
+        The emotion detected in the preceding pipeline step.  Used as the
+        contextual fallback when no mapping is found, providing narrative
+        continuity.  Must be a member of ``EMOTION_SET`` to be used;
+        otherwise the hard fallback ``"distress"`` applies.
 
     Returns
     -------
     str
-        A member of ``EMOTION_LIST``.  Always one of:
+        A member of ``EMOTION_SET``:
         ``"joy"``, ``"distress"``, ``"hope"``, ``"fear"``,
-        ``"pride"``, ``"shame"``, ``"anger"``, ``"gratitude"``,
-        ``"surprise"``.
-
-    Notes
-    -----
-    * If the lowercased input is already a valid OCC emotion, it is returned
-      immediately without consulting the keyword table, preserving exact
-      schema labels at zero cost.
-    * Keyword matching uses substring containment (``keyword in label``),
-      so a keyword matches even if embedded in a longer phrase.  The first
-      match in priority order wins; see ``_KEYWORD_PRIORITY`` for the defined
-      order and its rationale.
-    * Multi-word keywords (e.g., ``"looking forward"``) are evaluated before
-      their component words to prevent partial matches from shadowing them.
-    * ``"excited"`` maps to ``"joy"`` (not ``"surprise"``): excitement is an
-      anticipatory positive-valence state in OCC terms, not an expectation-
-      violation response.
+        ``"pride"``, ``"shame"``, ``"anger"``, or ``"gratitude"``.
 
     Examples
     --------
     ::
 
-        >>> map_to_occ("angry")
+        >>> map_to_occ("sadness")
+        'distress'
+        >>> map_to_occ("disgust")
         'anger'
-
-        >>> map_to_occ("GUILTY")
-        'shame'
-
-        >>> map_to_occ("very sad and upset")
-        'distress'
-
-        >>> map_to_occ("joy")                # already a valid OCC label
+        >>> map_to_occ("love")
+        'gratitude'
+        >>> map_to_occ("admiration")
+        'gratitude'
+        >>> map_to_occ("amazed")
         'joy'
-
-        >>> map_to_occ("confused")           # no keyword match → fallback
+        >>> map_to_occ("shocked")
         'distress'
-
-        >>> map_to_occ("")                   # empty string → fallback
+        >>> map_to_occ("unknown_label", previous_emotion="fear")
+        'fear'
+        >>> map_to_occ("unknown_label")
         'distress'
-
-        >>> map_to_occ("excited")            # joy, not surprise
-        'joy'
-
-        >>> map_to_occ("looking forward")    # multi-word hope cue
-        'hope'
-
-        >>> map_to_occ("shocked and ashamed")  # shame beats surprise
-        'shame'
     """
     normalised: str = str(label).lower().strip()
 
-    # Fast path: input is already a canonical OCC emotion.
+    # Tier 1: exact match in direct label map.
+    if normalised in _LABEL_MAP:
+        return _LABEL_MAP[normalised]
+
+    # Tier 2: exact match against EMOTION_SET (handles already-canonical input).
     if normalised in _VALID_EMOTIONS:
         return normalised
 
-    # Priority-ordered keyword scan.
-    for keyword, occ_emotion in _KEYWORD_PRIORITY:
+    # Tier 3: substring keyword fallback.
+    for keyword, occ_emotion in _KEYWORD_FALLBACK:
         if keyword in normalised:
             return occ_emotion
 
-    # No match: return safe fallback.
+    # Tier 4: contextual fallback — previous emotion if valid, else "distress".
+    if previous_emotion is not None and previous_emotion in _VALID_EMOTIONS:
+        return previous_emotion
+
     return _FALLBACK_EMOTION
 
 
 def is_valid_emotion(label: str) -> bool:
-    """Return ``True`` if *label* is a member of the AKG OCC emotion schema.
+    """Return ``True`` if *label* is a member of ``EMOTION_SET``.
 
-    Performs an exact, case-sensitive membership test against ``EMOTION_LIST``.
-    Intended as a lightweight guard for pipeline components that must verify
-    an emotion string before passing it to the planner or validator.
+    Performs an exact, case-sensitive membership test against the eight
+    canonical OCC emotions.
 
     Parameters
     ----------
@@ -285,8 +295,6 @@ def is_valid_emotion(label: str) -> bool:
     Returns
     -------
     bool
-        ``True`` if *label* is exactly one of the nine OCC emotions in
-        ``EMOTION_LIST``; ``False`` otherwise.
 
     Examples
     --------
@@ -294,13 +302,8 @@ def is_valid_emotion(label: str) -> bool:
 
         >>> is_valid_emotion("anger")
         True
-
-        >>> is_valid_emotion("Anger")   # case-sensitive: capital A fails
+        >>> is_valid_emotion("rage")
         False
-
-        >>> is_valid_emotion("rage")    # not in schema
-        False
-
         >>> is_valid_emotion("")
         False
     """

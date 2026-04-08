@@ -1,6 +1,23 @@
-venv/
+# Python
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+venv/
 .env
+
+# Mac
 .DS_Store
+
+# Logs
 *.log
+
+# Outputs
+outputs/
+experiment_results.json
+
+# Neo4j / local DB
+*.db
+
+# HuggingFace cache
+.cache/

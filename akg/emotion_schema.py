@@ -2,9 +2,10 @@
 Affective Knowledge Graph (AKG) — Emotion Schema
 ==================================================
 
-This module defines a psychologically defensible subset of OCC (Ortony, Clore &
-Collins, 1988) emotions selected for constrained emotional progression modeling
-in short narrative contexts (2–3 sentence story continuations).
+This module defines the canonical OCC emotion set used across the entire
+neuro-symbolic storytelling pipeline: planner, detector, transition matrix,
+and evaluation.  All system components must import ``EMOTION_SET`` from this
+module as their single source of truth for the valid emotion space.
 
 Selection rationale
 -------------------
@@ -20,25 +21,36 @@ The OCC model organises emotions around three appraisal foci: *events*
    distinct surface-level linguistic and situational signature, reducing
    annotation ambiguity and supporting measurable inter-rater agreement.
 
-3. **Cover the core valence × appraisal-focus space** — the nine emotions
+3. **Cover the core valence × appraisal-focus space** — the eight emotions
    span positive/negative valence and the three OCC foci (event-based,
-   agent-based, object-based), giving the graph enough structural diversity to
+   agent-based, prospective), giving the graph enough structural diversity to
    model meaningful progression arcs without combinatorial explosion.
 
 4. **Support tractable transition constraints** — the set is small enough that
-   each node can be assigned at most 3–4 psychologically plausible outgoing
-   edges, keeping the eventual transition graph sparse and interpretable.
+   each node can be assigned at most 3 psychologically plausible outgoing
+   edges, keeping the transition graph sparse and interpretable.
 
-Excluded categories
--------------------
+Excluded emotions
+-----------------
+* **surprise** — Although theoretically grounded in OCC as an expectation-
+  violation response, surprise is a valence-neutral transient modifier rather
+  than a dominant sustained appraisal state.  Its semantic diffuseness as an
+  NLI hypothesis causes it to absorb probability mass from clearly valenced
+  emotions during detection, degrading classifier discriminability.  It is
+  excluded from the canonical emotion set to ensure full consistency across
+  the planner, detector, transition matrix, and evaluation pipeline.
 * *Fortunes-of-others* emotions (e.g., happy-for, resentment, gloating, pity)
   were excluded because they require modelling a second agent's goal structure,
   which is rarely recoverable from 2–3 sentence contexts.
-* Fine-grained variants within the same appraisal branch (e.g., distress vs.
-  fear, or pride vs. admiration) were collapsed to the more narratively
-  frequent representative to avoid near-duplicate nodes.
 * *Satisfaction* and *relief* were excluded as they presuppose completed event
   sequences that exceed the short-context window assumption.
+
+Naming convention
+-----------------
+``EMOTION_SET`` is the authoritative identifier used throughout the system.
+``EMOTION_LIST`` is provided as an alias for backward compatibility with
+components that previously imported it by that name.  New code should use
+``EMOTION_SET``.
 
 Reference
 ---------
@@ -47,10 +59,10 @@ Emotions*. Cambridge University Press.
 """
 
 # ---------------------------------------------------------------------------
-# Core emotion list
+# Canonical emotion set
 # ---------------------------------------------------------------------------
 
-EMOTION_LIST: list[str] = [
+EMOTION_SET: list[str] = [
     "joy",
     "distress",
     "hope",
@@ -59,8 +71,11 @@ EMOTION_LIST: list[str] = [
     "shame",
     "anger",
     "gratitude",
-    "surprise",
 ]
+
+# Backward-compatible alias.  Components previously importing EMOTION_LIST
+# continue to function without modification.
+EMOTION_LIST: list[str] = EMOTION_SET
 
 # ---------------------------------------------------------------------------
 # Academic descriptions grounded in OCC appraisal theory
@@ -116,20 +131,33 @@ EMOTION_DESCRIPTIONS: dict[str, str] = {
         "to the self (OCC: pleased about an event AND approving of the causal "
         "agent). Serves as the valence complement of anger in the agent branch."
     ),
-    "surprise": (
-        "A valence-neutral event-based emotion arising from the appraisal that an "
-        "event is highly unexpected relative to the agent's world model, "
-        "irrespective of whether the event is desirable or undesirable. Included "
-        "as a transitional emotion that modulates the direction of subsequent "
-        "appraisal and is frequently evidenced in short narrative pivot points."
-    ),
 }
 
 # ---------------------------------------------------------------------------
-# Sanity check (importable guard)
+# Sanity checks (importable guards)
 # ---------------------------------------------------------------------------
 
-assert set(EMOTION_LIST) == set(EMOTION_DESCRIPTIONS.keys()), (
-    "EMOTION_LIST and EMOTION_DESCRIPTIONS are out of sync. "
+assert set(EMOTION_SET) == set(EMOTION_DESCRIPTIONS.keys()), (
+    "EMOTION_SET and EMOTION_DESCRIPTIONS are out of sync. "
     "Every emotion must have exactly one description entry."
 )
+
+assert "surprise" not in EMOTION_SET, (
+    "'surprise' must not appear in EMOTION_SET. "
+    "See module docstring for exclusion rationale."
+)
+# ---------------------------------------------------------------------------
+# Utility functions
+# ---------------------------------------------------------------------------
+
+def is_valid_emotion(emotion: str) -> bool:
+    """
+    Validate whether an emotion belongs to the canonical EMOTION_SET.
+
+    Args:
+        emotion (str): Emotion label
+
+    Returns:
+        bool: True if valid, False otherwise
+    """
+    return emotion in EMOTION_SET

@@ -51,7 +51,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from neo4j import Driver, Session
 
 from akg.emotion_schema import EMOTION_LIST, EMOTION_DESCRIPTIONS
-from scripts.neo4j_connection import get_driver, verify_connectivity
+from akg.neo4j_connector import get_driver, verify_connectivity
 
 # ---------------------------------------------------------------------------
 # Cypher templates
