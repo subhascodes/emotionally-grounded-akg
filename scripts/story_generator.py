@@ -16,10 +16,6 @@ Generation flow per step:
     LLM → _apply_full_pipeline → detect + validate
               ↓ fail (up to max_retries)
          escalated retry prompt ──────────────↑
-              ↓ still failing after max_retries
-         _force_emotion_template(subject, target)
-         → realized = target, confidence = 1.0
-         → GUARANTEED correct — no further retries
 """
 
 import os
